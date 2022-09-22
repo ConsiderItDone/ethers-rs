@@ -2,7 +2,7 @@
 use crate::{provider::ProviderError, JsonRpcClient};
 
 use async_trait::async_trait;
-use reqwest::{header::HeaderValue, Client, Error as ReqwestError};
+use reqwest::{header::HeaderValue, blocking::Client, Error as ReqwestError};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     str::FromStr,
@@ -13,21 +13,6 @@ use url::Url;
 
 use super::common::{Authorization, JsonRpcError, Request, Response};
 
-/// A low-level JSON-RPC Client over HTTP.
-///
-/// # Example
-///
-/// ```no_run
-/// use ethers_core::types::U64;
-/// use ethers_providers::{JsonRpcClient, Http};
-/// use std::str::FromStr;
-///
-/// # async fn foo() -> Result<(), Box<dyn std::error::Error>> {
-/// let provider = Http::from_str("http://localhost:8545")?;
-/// let block_number: U64 = provider.request("eth_blockNumber", ()).await?;
-/// # Ok(())
-/// # }
-/// ```
 #[derive(Debug)]
 pub struct Provider {
     id: AtomicU64,
@@ -74,8 +59,8 @@ impl JsonRpcClient for Provider {
         let next_id = self.id.fetch_add(1, Ordering::SeqCst);
         let payload = Request::new(next_id, method, params);
 
-        let res = self.client.post(self.url.as_ref()).json(&payload).send().await?;
-        let body = res.bytes().await?;
+        let res = self.client.post(self.url.as_ref()).json(&payload).send()?;
+        let body = res.bytes()?;
 
         let raw = match serde_json::from_slice(&body) {
             Ok(Response::Success { result, .. }) => result.to_owned(),
@@ -166,7 +151,7 @@ impl Provider {
     /// let client = reqwest::Client::builder().build().unwrap();
     /// let provider = Http::new_with_client(url, client);
     /// ```
-    pub fn new_with_client(url: impl Into<Url>, client: reqwest::Client) -> Self {
+    pub fn new_with_client(url: impl Into<Url>, client: reqwest::blocking::Client) -> Self {
         Self { id: AtomicU64::new(1), client, url: url.into() }
     }
 }
