@@ -11,56 +11,33 @@ mod eth_tests {
     };
     use ethers_providers::RINKEBY;
 
-    #[tokio::test]
-    async fn non_existing_data_works() {
+    #[test]
+    fn non_existing_data_works() {
         let provider = RINKEBY.provider();
 
-        assert!(provider.get_transaction(H256::zero()).await.unwrap().is_none());
-        assert!(provider.get_transaction_receipt(H256::zero()).await.unwrap().is_none());
-        assert!(provider.get_block(BlockId::Hash(H256::zero())).await.unwrap().is_none());
-        assert!(provider.get_block_with_txs(BlockId::Hash(H256::zero())).await.unwrap().is_none());
+        assert!(provider.get_transaction(H256::zero()).unwrap().is_none());
+        assert!(provider.get_transaction_receipt(H256::zero()).unwrap().is_none());
+        assert!(provider.get_block(BlockId::Hash(H256::zero())).unwrap().is_none());
+        assert!(provider.get_block_with_txs(BlockId::Hash(H256::zero())).unwrap().is_none());
     }
 
-    #[tokio::test]
-    async fn client_version() {
+    #[test]
+    fn client_version() {
         let provider = RINKEBY.provider();
 
         // e.g., Geth/v1.10.6-omnibus-1af33248/linux-amd64/go1.16.6
         assert!(provider
             .client_version()
-            .await
             .expect("Could not make web3_clientVersion call to provider")
             .starts_with("Geth/v"));
     }
 
-    #[tokio::test]
-    async fn eip1559_fee_estimation() {
+    #[test]
+    fn eip1559_fee_estimation() {
         let provider = ethers_providers::MAINNET.provider();
 
         let (_max_fee_per_gas, _max_priority_fee_per_gas) =
-            provider.estimate_eip1559_fees(None).await.unwrap();
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_hardhat_compatibility() {
-        use ethers_providers::RetryClient;
-
-        async fn send_zst_requests<M: Middleware>(provider: M) {
-            let _ = provider.get_chainid().await.unwrap();
-            let _ = provider.get_block_number().await.unwrap();
-            let _ = provider.get_gas_price().await.unwrap();
-            let _ = provider.get_accounts().await.unwrap();
-            let _ = provider.get_net_version().await.unwrap();
-        }
-
-        let provider = Provider::<Http>::try_from("http://localhost:8545").unwrap();
-        send_zst_requests(provider).await;
-
-        let provider =
-            Provider::<RetryClient<Http>>::new_client("http://localhost:8545", 10, 200).unwrap();
-
-        send_zst_requests(provider).await;
+            provider.estimate_eip1559_fees(None).unwrap();
     }
 }
 
@@ -70,12 +47,12 @@ mod celo_tests {
     use ethers_core::types::{Randomness, H256};
     use futures_util::stream::StreamExt;
 
-    #[tokio::test]
-    async fn get_block() {
+    #[test]
+    fn get_block() {
         let provider =
             Provider::<Http>::try_from("https://alfajores-forno.celo-testnet.org").unwrap();
 
-        let block = provider.get_block(447254).await.unwrap().unwrap();
+        let block = provider.get_block(447254).unwrap().unwrap();
         assert_eq!(
             block.randomness,
             Randomness {

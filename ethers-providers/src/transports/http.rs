@@ -1,8 +1,7 @@
 // Code adapted from: https://github.com/althea-net/guac_rs/tree/master/web3/src/jsonrpc
 use crate::{provider::ProviderError, JsonRpcClient};
 
-use async_trait::async_trait;
-use reqwest::{header::HeaderValue, blocking::Client, Error as ReqwestError};
+use reqwest::{blocking::Client, header::HeaderValue, Error as ReqwestError};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     str::FromStr,
@@ -44,14 +43,12 @@ impl From<ClientError> for ProviderError {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl JsonRpcClient for Provider {
     type Error = ClientError;
 
     /// Sends a POST request with the provided method and the params serialized as JSON
     /// over HTTP
-    async fn request<T: Serialize + Send + Sync, R: DeserializeOwned>(
+    fn request<T: Serialize + Send + Sync, R: DeserializeOwned>(
         &self,
         method: &str,
         params: T,
@@ -148,7 +145,7 @@ impl Provider {
     /// use url::Url;
     ///
     /// let url = Url::parse("http://localhost:8545").unwrap();
-    /// let client = reqwest::Client::builder().build().unwrap();
+    /// let client = reqwest::blocking::Client::builder().build().unwrap();
     /// let provider = Http::new_with_client(url, client);
     /// ```
     pub fn new_with_client(url: impl Into<Url>, client: reqwest::blocking::Client) -> Self {

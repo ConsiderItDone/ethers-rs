@@ -4,7 +4,6 @@
 #![allow(clippy::type_complexity)]
 #![doc = include_str!("../README.md")]
 mod transports;
-use futures_util::future::join_all;
 pub use transports::*;
 
 mod provider;
@@ -19,11 +18,10 @@ pub use log_query::{LogQuery, LogQueryError};
 pub mod call_raw;
 pub mod erc;
 
-use async_trait::async_trait;
 use auto_impl::auto_impl;
 use ethers_core::types::transaction::{eip2718::TypedTransaction, eip2930::AccessListWithGasUsed};
 use serde::{de::DeserializeOwned, Serialize};
-use std::{error::Error, fmt::Debug, future::Future, pin::Pin};
+use std::{error::Error, fmt::Debug, pin::Pin};
 use url::Url;
 
 // feature-enabled support for dev-rpc methods
@@ -35,13 +33,10 @@ pub type EscalationPolicy = Box<dyn Fn(U256, usize) -> U256 + Send + Sync>;
 
 // Helper type alias
 #[cfg(target_arch = "wasm32")]
-pub(crate) type PinBoxFut<'a, T> = Pin<Box<dyn Future<Output = Result<T, ProviderError>> + 'a>>;
+pub(crate) type PinBoxFut<T> = Pin<T>;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) type PinBoxFut<'a, T> =
-    Pin<Box<dyn Future<Output = Result<T, ProviderError>> + Send + 'a>>;
+pub(crate) type PinBoxFut<T> = Pin<T>;
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[auto_impl(&, Box, Arc)]
 /// Trait which must be implemented by data transports to be used with the Ethereum
 /// JSON-RPC provider.
@@ -50,7 +45,7 @@ pub trait JsonRpcClient: Debug + Send + Sync {
     type Error: Error + Into<ProviderError>;
 
     /// Sends a request with the provided JSON-RPC and parameters serialized as JSON
-    async fn request<T, R>(&self, method: &str, params: T) -> Result<R, Self::Error>
+    fn request<T, R>(&self, method: &str, params: T) -> Result<R, Self::Error>
     where
         T: Debug + Serialize + Send + Sync,
         R: DeserializeOwned;
@@ -61,76 +56,12 @@ pub trait FromErr<T> {
     fn from(src: T) -> Self;
 }
 
-/// Calls the future if `item` is None, otherwise returns a `futures::ok`
-pub async fn maybe<F, T, E>(item: Option<T>, f: F) -> Result<T, E>
-where
-    F: Future<Output = Result<T, E>>,
-{
-    if let Some(item) = item {
-        futures_util::future::ok(item).await
-    } else {
-        f.await
-    }
-}
-
 /// A middleware allows customizing requests send and received from an ethereum node.
 ///
 /// Writing a middleware is as simple as:
 /// 1. implementing the [`inner`](crate::Middleware::inner) method to point to the next layer in the
 /// "middleware onion", 2. implementing the [`FromErr`](crate::FromErr) trait on your middleware's
 /// error type 3. implementing any of the methods you want to override
-///
-/// ```rust
-/// use ethers_providers::{Middleware, FromErr};
-/// use ethers_core::types::{U64, TransactionRequest, U256, transaction::eip2718::TypedTransaction, BlockId};
-/// use thiserror::Error;
-/// use async_trait::async_trait;
-///
-/// #[derive(Debug)]
-/// struct MyMiddleware<M>(M);
-///
-/// #[derive(Error, Debug)]
-/// pub enum MyError<M: Middleware> {
-///     #[error("{0}")]
-///     MiddlewareError(M::Error),
-///
-///     // Add your middleware's specific errors here
-/// }
-///
-/// impl<M: Middleware> FromErr<M::Error> for MyError<M> {
-///     fn from(src: M::Error) -> MyError<M> {
-///         MyError::MiddlewareError(src)
-///     }
-/// }
-///
-/// #[async_trait]
-/// impl<M> Middleware for MyMiddleware<M>
-/// where
-///     M: Middleware,
-/// {
-///     type Error = MyError<M>;
-///     type Provider = M::Provider;
-///     type Inner = M;
-///
-///     fn inner(&self) -> &M {
-///         &self.0
-///     }
-///
-///     /// Overrides the default `get_block_number` method to always return 0
-///     async fn get_block_number(&self) -> Result<U64, Self::Error> {
-///         Ok(U64::zero())
-///     }
-///
-///     /// Overrides the default `estimate_gas` method to log that it was called,
-///     /// before forwarding the call to the next layer.
-///     async fn estimate_gas(&self, tx: &TypedTransaction, block: Option<BlockId>) -> Result<U256, Self::Error> {
-///         println!("Estimating gas...");
-///         self.inner().estimate_gas(tx, block).await.map_err(FromErr::from)
-///     }
-/// }
-/// ```
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[auto_impl(&, Box, Arc)]
 pub trait Middleware: Sync + Send + Debug {
     type Error: Sync + Send + Error + FromErr<<Self::Inner as Middleware>::Error>;
@@ -149,8 +80,8 @@ pub trait Middleware: Sync + Send + Debug {
         self.inner().default_sender()
     }
 
-    async fn client_version(&self) -> Result<String, Self::Error> {
-        self.inner().client_version().await.map_err(FromErr::from)
+    fn client_version(&self) -> Result<String, Self::Error> {
+        self.inner().client_version().map_err(FromErr::from)
     }
 
     /// Fill necessary details of a transaction for dispatch
@@ -170,175 +101,171 @@ pub trait Middleware: Sync + Send + Debug {
     ///
     /// E.g. a middleware wanting to double gas prices should consider doing so
     /// _after_ delegating and allowing the default implementation to poll gas.
-    async fn fill_transaction(
+    fn fill_transaction(
         &self,
         tx: &mut TypedTransaction,
         block: Option<BlockId>,
     ) -> Result<(), Self::Error> {
-        self.inner().fill_transaction(tx, block).await.map_err(FromErr::from)
+        self.inner().fill_transaction(tx, block).map_err(FromErr::from)
     }
 
-    async fn get_block_number(&self) -> Result<U64, Self::Error> {
-        self.inner().get_block_number().await.map_err(FromErr::from)
+    fn get_block_number(&self) -> Result<U64, Self::Error> {
+        self.inner().get_block_number().map_err(FromErr::from)
     }
 
-    async fn resolve_name(&self, ens_name: &str) -> Result<Address, Self::Error> {
-        self.inner().resolve_name(ens_name).await.map_err(FromErr::from)
+    fn resolve_name(&self, ens_name: &str) -> Result<Address, Self::Error> {
+        self.inner().resolve_name(ens_name).map_err(FromErr::from)
     }
 
-    async fn lookup_address(&self, address: Address) -> Result<String, Self::Error> {
-        self.inner().lookup_address(address).await.map_err(FromErr::from)
+    fn lookup_address(&self, address: Address) -> Result<String, Self::Error> {
+        self.inner().lookup_address(address).map_err(FromErr::from)
     }
 
-    async fn resolve_avatar(&self, ens_name: &str) -> Result<Url, Self::Error> {
-        self.inner().resolve_avatar(ens_name).await.map_err(FromErr::from)
+    fn resolve_avatar(&self, ens_name: &str) -> Result<Url, Self::Error> {
+        self.inner().resolve_avatar(ens_name).map_err(FromErr::from)
     }
 
-    async fn resolve_nft(&self, token: erc::ERCNFT) -> Result<Url, Self::Error> {
-        self.inner().resolve_nft(token).await.map_err(FromErr::from)
+    fn resolve_nft(&self, token: erc::ERCNFT) -> Result<Url, Self::Error> {
+        self.inner().resolve_nft(token).map_err(FromErr::from)
     }
 
-    async fn resolve_field(&self, ens_name: &str, field: &str) -> Result<String, Self::Error> {
-        self.inner().resolve_field(ens_name, field).await.map_err(FromErr::from)
+    fn resolve_field(&self, ens_name: &str, field: &str) -> Result<String, Self::Error> {
+        self.inner().resolve_field(ens_name, field).map_err(FromErr::from)
     }
 
-    async fn get_block<T: Into<BlockId> + Send + Sync>(
+    fn get_block<T: Into<BlockId> + Send + Sync>(
         &self,
         block_hash_or_number: T,
     ) -> Result<Option<Block<TxHash>>, Self::Error> {
-        self.inner().get_block(block_hash_or_number).await.map_err(FromErr::from)
+        self.inner().get_block(block_hash_or_number).map_err(FromErr::from)
     }
 
-    async fn get_block_with_txs<T: Into<BlockId> + Send + Sync>(
+    fn get_block_with_txs<T: Into<BlockId> + Send + Sync>(
         &self,
         block_hash_or_number: T,
     ) -> Result<Option<Block<Transaction>>, Self::Error> {
-        self.inner().get_block_with_txs(block_hash_or_number).await.map_err(FromErr::from)
+        self.inner().get_block_with_txs(block_hash_or_number).map_err(FromErr::from)
     }
 
-    async fn get_uncle_count<T: Into<BlockId> + Send + Sync>(
+    fn get_uncle_count<T: Into<BlockId> + Send + Sync>(
         &self,
         block_hash_or_number: T,
     ) -> Result<U256, Self::Error> {
-        self.inner().get_uncle_count(block_hash_or_number).await.map_err(FromErr::from)
+        self.inner().get_uncle_count(block_hash_or_number).map_err(FromErr::from)
     }
 
-    async fn get_uncle<T: Into<BlockId> + Send + Sync>(
+    fn get_uncle<T: Into<BlockId> + Send + Sync>(
         &self,
         block_hash_or_number: T,
         idx: U64,
     ) -> Result<Option<Block<H256>>, Self::Error> {
-        self.inner().get_uncle(block_hash_or_number, idx).await.map_err(FromErr::from)
+        self.inner().get_uncle(block_hash_or_number, idx).map_err(FromErr::from)
     }
 
-    async fn get_transaction_count<T: Into<NameOrAddress> + Send + Sync>(
+    fn get_transaction_count<T: Into<NameOrAddress> + Send + Sync>(
         &self,
         from: T,
         block: Option<BlockId>,
     ) -> Result<U256, Self::Error> {
-        self.inner().get_transaction_count(from, block).await.map_err(FromErr::from)
+        self.inner().get_transaction_count(from, block).map_err(FromErr::from)
     }
 
-    async fn estimate_gas(
+    fn estimate_gas(
         &self,
         tx: &TypedTransaction,
         block: Option<BlockId>,
     ) -> Result<U256, Self::Error> {
-        self.inner().estimate_gas(tx, block).await.map_err(FromErr::from)
+        self.inner().estimate_gas(tx, block).map_err(FromErr::from)
     }
 
-    async fn call(
-        &self,
-        tx: &TypedTransaction,
-        block: Option<BlockId>,
-    ) -> Result<Bytes, Self::Error> {
-        self.inner().call(tx, block).await.map_err(FromErr::from)
+    fn call(&self, tx: &TypedTransaction, block: Option<BlockId>) -> Result<Bytes, Self::Error> {
+        self.inner().call(tx, block).map_err(FromErr::from)
     }
 
-    async fn syncing(&self) -> Result<SyncingStatus, Self::Error> {
-        self.inner().syncing().await.map_err(FromErr::from)
+    fn syncing(&self) -> Result<SyncingStatus, Self::Error> {
+        self.inner().syncing().map_err(FromErr::from)
     }
 
-    async fn get_chainid(&self) -> Result<U256, Self::Error> {
-        self.inner().get_chainid().await.map_err(FromErr::from)
+    fn get_chainid(&self) -> Result<U256, Self::Error> {
+        self.inner().get_chainid().map_err(FromErr::from)
     }
 
-    async fn get_net_version(&self) -> Result<String, Self::Error> {
-        self.inner().get_net_version().await.map_err(FromErr::from)
+    fn get_net_version(&self) -> Result<String, Self::Error> {
+        self.inner().get_net_version().map_err(FromErr::from)
     }
 
-    async fn get_balance<T: Into<NameOrAddress> + Send + Sync>(
+    fn get_balance<T: Into<NameOrAddress> + Send + Sync>(
         &self,
         from: T,
         block: Option<BlockId>,
     ) -> Result<U256, Self::Error> {
-        self.inner().get_balance(from, block).await.map_err(FromErr::from)
+        self.inner().get_balance(from, block).map_err(FromErr::from)
     }
 
-    async fn get_transaction<T: Send + Sync + Into<TxHash>>(
+    fn get_transaction<T: Send + Sync + Into<TxHash>>(
         &self,
         transaction_hash: T,
     ) -> Result<Option<Transaction>, Self::Error> {
-        self.inner().get_transaction(transaction_hash).await.map_err(FromErr::from)
+        self.inner().get_transaction(transaction_hash).map_err(FromErr::from)
     }
 
-    async fn get_transaction_receipt<T: Send + Sync + Into<TxHash>>(
+    fn get_transaction_receipt<T: Send + Sync + Into<TxHash>>(
         &self,
         transaction_hash: T,
     ) -> Result<Option<TransactionReceipt>, Self::Error> {
-        self.inner().get_transaction_receipt(transaction_hash).await.map_err(FromErr::from)
+        self.inner().get_transaction_receipt(transaction_hash).map_err(FromErr::from)
     }
 
-    async fn get_block_receipts<T: Into<BlockNumber> + Send + Sync>(
+    fn get_block_receipts<T: Into<BlockNumber> + Send + Sync>(
         &self,
         block: T,
     ) -> Result<Vec<TransactionReceipt>, Self::Error> {
-        self.inner().get_block_receipts(block).await.map_err(FromErr::from)
+        self.inner().get_block_receipts(block).map_err(FromErr::from)
     }
 
-    async fn get_gas_price(&self) -> Result<U256, Self::Error> {
-        self.inner().get_gas_price().await.map_err(FromErr::from)
+    fn get_gas_price(&self) -> Result<U256, Self::Error> {
+        self.inner().get_gas_price().map_err(FromErr::from)
     }
 
-    async fn estimate_eip1559_fees(
+    fn estimate_eip1559_fees(
         &self,
         estimator: Option<fn(U256, Vec<Vec<U256>>) -> (U256, U256)>,
     ) -> Result<(U256, U256), Self::Error> {
-        self.inner().estimate_eip1559_fees(estimator).await.map_err(FromErr::from)
+        self.inner().estimate_eip1559_fees(estimator).map_err(FromErr::from)
     }
 
-    async fn get_accounts(&self) -> Result<Vec<Address>, Self::Error> {
-        self.inner().get_accounts().await.map_err(FromErr::from)
+    fn get_accounts(&self) -> Result<Vec<Address>, Self::Error> {
+        self.inner().get_accounts().map_err(FromErr::from)
     }
 
     /// This returns true if either the middleware stack contains a `SignerMiddleware`, or the
     /// JSON-RPC provider has an unlocked key that can sign using the `eth_sign` call. If none of
     /// the above conditions are met, then the middleware stack is not capable of signing data.
-    async fn is_signer(&self) -> bool {
-        self.inner().is_signer().await
+    fn is_signer(&self) -> bool {
+        self.inner().is_signer()
     }
 
-    async fn sign<T: Into<Bytes> + Send + Sync>(
+    fn sign<T: Into<Bytes> + Send + Sync>(
         &self,
         data: T,
         from: &Address,
     ) -> Result<Signature, Self::Error> {
-        self.inner().sign(data, from).await.map_err(FromErr::from)
+        self.inner().sign(data, from).map_err(FromErr::from)
     }
 
     /// Sign a transaction via RPC call
-    async fn sign_transaction(
+    fn sign_transaction(
         &self,
         tx: &TypedTransaction,
         from: Address,
     ) -> Result<Signature, Self::Error> {
-        self.inner().sign_transaction(tx, from).await.map_err(FromErr::from)
+        self.inner().sign_transaction(tx, from).map_err(FromErr::from)
     }
 
     ////// Contract state
 
-    async fn get_logs(&self, filter: &Filter) -> Result<Vec<Log>, Self::Error> {
-        self.inner().get_logs(filter).await.map_err(FromErr::from)
+    fn get_logs(&self, filter: &Filter) -> Result<Vec<Log>, Self::Error> {
+        self.inner().get_logs(filter).map_err(FromErr::from)
     }
 
     /// Returns a stream of logs are loaded in pages of given page size
@@ -350,187 +277,179 @@ pub trait Middleware: Sync + Send + Debug {
         self.inner().get_logs_paginated(filter, page_size)
     }
 
-    async fn new_filter(&self, filter: FilterKind<'_>) -> Result<U256, Self::Error> {
-        self.inner().new_filter(filter).await.map_err(FromErr::from)
+    fn new_filter(&self, filter: FilterKind<'_>) -> Result<U256, Self::Error> {
+        self.inner().new_filter(filter).map_err(FromErr::from)
     }
 
-    async fn uninstall_filter<T: Into<U256> + Send + Sync>(
-        &self,
-        id: T,
-    ) -> Result<bool, Self::Error> {
-        self.inner().uninstall_filter(id).await.map_err(FromErr::from)
+    fn uninstall_filter<T: Into<U256> + Send + Sync>(&self, id: T) -> Result<bool, Self::Error> {
+        self.inner().uninstall_filter(id).map_err(FromErr::from)
     }
 
-    async fn get_filter_changes<T, R>(&self, id: T) -> Result<Vec<R>, Self::Error>
+    fn get_filter_changes<T, R>(&self, id: T) -> Result<Vec<R>, Self::Error>
     where
         T: Into<U256> + Send + Sync,
         R: Serialize + DeserializeOwned + Send + Sync + Debug,
     {
-        self.inner().get_filter_changes(id).await.map_err(FromErr::from)
+        self.inner().get_filter_changes(id).map_err(FromErr::from)
     }
 
-    async fn get_code<T: Into<NameOrAddress> + Send + Sync>(
+    fn get_code<T: Into<NameOrAddress> + Send + Sync>(
         &self,
         at: T,
         block: Option<BlockId>,
     ) -> Result<Bytes, Self::Error> {
-        self.inner().get_code(at, block).await.map_err(FromErr::from)
+        self.inner().get_code(at, block).map_err(FromErr::from)
     }
 
-    async fn get_storage_at<T: Into<NameOrAddress> + Send + Sync>(
+    fn get_storage_at<T: Into<NameOrAddress> + Send + Sync>(
         &self,
         from: T,
         location: H256,
         block: Option<BlockId>,
     ) -> Result<H256, Self::Error> {
-        self.inner().get_storage_at(from, location, block).await.map_err(FromErr::from)
+        self.inner().get_storage_at(from, location, block).map_err(FromErr::from)
     }
 
-    async fn get_proof<T: Into<NameOrAddress> + Send + Sync>(
+    fn get_proof<T: Into<NameOrAddress> + Send + Sync>(
         &self,
         from: T,
         locations: Vec<H256>,
         block: Option<BlockId>,
     ) -> Result<EIP1186ProofResponse, Self::Error> {
-        self.inner().get_proof(from, locations, block).await.map_err(FromErr::from)
+        self.inner().get_proof(from, locations, block).map_err(FromErr::from)
     }
 
     // Mempool inspection for Geth's API
 
-    async fn txpool_content(&self) -> Result<TxpoolContent, Self::Error> {
-        self.inner().txpool_content().await.map_err(FromErr::from)
+    fn txpool_content(&self) -> Result<TxpoolContent, Self::Error> {
+        self.inner().txpool_content().map_err(FromErr::from)
     }
 
-    async fn txpool_inspect(&self) -> Result<TxpoolInspect, Self::Error> {
-        self.inner().txpool_inspect().await.map_err(FromErr::from)
+    fn txpool_inspect(&self) -> Result<TxpoolInspect, Self::Error> {
+        self.inner().txpool_inspect().map_err(FromErr::from)
     }
 
-    async fn txpool_status(&self) -> Result<TxpoolStatus, Self::Error> {
-        self.inner().txpool_status().await.map_err(FromErr::from)
+    fn txpool_status(&self) -> Result<TxpoolStatus, Self::Error> {
+        self.inner().txpool_status().map_err(FromErr::from)
     }
 
     // Geth `trace` support
     /// After replaying any previous transactions in the same block,
     /// Replays a transaction, returning the traces configured with passed options
-    async fn debug_trace_transaction(
+    fn debug_trace_transaction(
         &self,
         tx_hash: TxHash,
         trace_options: GethDebugTracingOptions,
     ) -> Result<GethTrace, ProviderError> {
-        self.inner().debug_trace_transaction(tx_hash, trace_options).await.map_err(FromErr::from)
+        self.inner().debug_trace_transaction(tx_hash, trace_options).map_err(FromErr::from)
     }
 
     // Parity `trace` support
 
     /// Executes the given call and returns a number of possible traces for it
-    async fn trace_call<T: Into<TypedTransaction> + Send + Sync>(
+    fn trace_call<T: Into<TypedTransaction> + Send + Sync>(
         &self,
         req: T,
         trace_type: Vec<TraceType>,
         block: Option<BlockNumber>,
     ) -> Result<BlockTrace, Self::Error> {
-        self.inner().trace_call(req, trace_type, block).await.map_err(FromErr::from)
+        self.inner().trace_call(req, trace_type, block).map_err(FromErr::from)
     }
 
-    async fn trace_call_many<T: Into<TypedTransaction> + Send + Sync>(
+    fn trace_call_many<T: Into<TypedTransaction> + Send + Sync>(
         &self,
         req: Vec<(T, Vec<TraceType>)>,
         block: Option<BlockNumber>,
     ) -> Result<Vec<BlockTrace>, Self::Error> {
-        self.inner().trace_call_many(req, block).await.map_err(FromErr::from)
+        self.inner().trace_call_many(req, block).map_err(FromErr::from)
     }
 
     /// Traces a call to `eth_sendRawTransaction` without making the call, returning the traces
-    async fn trace_raw_transaction(
+    fn trace_raw_transaction(
         &self,
         data: Bytes,
         trace_type: Vec<TraceType>,
     ) -> Result<BlockTrace, Self::Error> {
-        self.inner().trace_raw_transaction(data, trace_type).await.map_err(FromErr::from)
+        self.inner().trace_raw_transaction(data, trace_type).map_err(FromErr::from)
     }
 
     /// Replays a transaction, returning the traces
-    async fn trace_replay_transaction(
+    fn trace_replay_transaction(
         &self,
         hash: H256,
         trace_type: Vec<TraceType>,
     ) -> Result<BlockTrace, Self::Error> {
-        self.inner().trace_replay_transaction(hash, trace_type).await.map_err(FromErr::from)
+        self.inner().trace_replay_transaction(hash, trace_type).map_err(FromErr::from)
     }
 
     /// Replays all transactions in a block returning the requested traces for each transaction
-    async fn trace_replay_block_transactions(
+    fn trace_replay_block_transactions(
         &self,
         block: BlockNumber,
         trace_type: Vec<TraceType>,
     ) -> Result<Vec<BlockTrace>, Self::Error> {
-        self.inner().trace_replay_block_transactions(block, trace_type).await.map_err(FromErr::from)
+        self.inner().trace_replay_block_transactions(block, trace_type).map_err(FromErr::from)
     }
 
     /// Returns traces created at given block
-    async fn trace_block(&self, block: BlockNumber) -> Result<Vec<Trace>, Self::Error> {
-        self.inner().trace_block(block).await.map_err(FromErr::from)
+    fn trace_block(&self, block: BlockNumber) -> Result<Vec<Trace>, Self::Error> {
+        self.inner().trace_block(block).map_err(FromErr::from)
     }
 
     /// Return traces matching the given filter
-    async fn trace_filter(&self, filter: TraceFilter) -> Result<Vec<Trace>, Self::Error> {
-        self.inner().trace_filter(filter).await.map_err(FromErr::from)
+    fn trace_filter(&self, filter: TraceFilter) -> Result<Vec<Trace>, Self::Error> {
+        self.inner().trace_filter(filter).map_err(FromErr::from)
     }
 
     /// Returns trace at the given position
-    async fn trace_get<T: Into<U64> + Send + Sync>(
+    fn trace_get<T: Into<U64> + Send + Sync>(
         &self,
         hash: H256,
         index: Vec<T>,
     ) -> Result<Trace, Self::Error> {
-        self.inner().trace_get(hash, index).await.map_err(FromErr::from)
+        self.inner().trace_get(hash, index).map_err(FromErr::from)
     }
 
     /// Returns all traces of a given transaction
-    async fn trace_transaction(&self, hash: H256) -> Result<Vec<Trace>, Self::Error> {
-        self.inner().trace_transaction(hash).await.map_err(FromErr::from)
+    fn trace_transaction(&self, hash: H256) -> Result<Vec<Trace>, Self::Error> {
+        self.inner().trace_transaction(hash).map_err(FromErr::from)
     }
 
     // Parity namespace
 
     /// Returns all receipts for that block. Must be done on a parity node.
-    async fn parity_block_receipts<T: Into<BlockNumber> + Send + Sync>(
+    fn parity_block_receipts<T: Into<BlockNumber> + Send + Sync>(
         &self,
         block: T,
     ) -> Result<Vec<TransactionReceipt>, Self::Error> {
-        self.inner().parity_block_receipts(block).await.map_err(FromErr::from)
+        self.inner().parity_block_receipts(block).map_err(FromErr::from)
     }
 
-    async fn fee_history<T: Into<U256> + serde::Serialize + Send + Sync>(
+    fn fee_history<T: Into<U256> + serde::Serialize + Send + Sync>(
         &self,
         block_count: T,
         last_block: BlockNumber,
         reward_percentiles: &[f64],
     ) -> Result<FeeHistory, Self::Error> {
-        self.inner()
-            .fee_history(block_count, last_block, reward_percentiles)
-            .await
-            .map_err(FromErr::from)
+        self.inner().fee_history(block_count, last_block, reward_percentiles).map_err(FromErr::from)
     }
 
-    async fn create_access_list(
+    fn create_access_list(
         &self,
         tx: &TypedTransaction,
         block: Option<BlockId>,
     ) -> Result<AccessListWithGasUsed, Self::Error> {
-        self.inner().create_access_list(tx, block).await.map_err(FromErr::from)
+        self.inner().create_access_list(tx, block).map_err(FromErr::from)
     }
 }
 
 #[cfg(feature = "celo")]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait CeloMiddleware: Middleware {
-    async fn get_validators_bls_public_keys<T: Into<BlockId> + Send + Sync>(
+    fn get_validators_bls_public_keys<T: Into<BlockId> + Send + Sync>(
         &self,
         block_id: T,
     ) -> Result<Vec<String>, ProviderError> {
-        self.provider().get_validators_bls_public_keys(block_id).await.map_err(FromErr::from)
+        self.provider().get_validators_bls_public_keys(block_id).map_err(FromErr::from)
     }
 }
 

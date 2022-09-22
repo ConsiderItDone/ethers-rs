@@ -1,6 +1,5 @@
 use crate::{JsonRpcClient, ProviderError};
 
-use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use std::{
@@ -32,14 +31,12 @@ impl Default for MockProvider {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl JsonRpcClient for MockProvider {
     type Error = MockError;
 
     /// Pushes the `(method, params)` to the back of the `requests` queue,
     /// pops the responses from the back of the `responses` queue
-    async fn request<T: Serialize + Send + Sync, R: DeserializeOwned>(
+    fn request<T: Serialize + Send + Sync, R: DeserializeOwned>(
         &self,
         method: &str,
         params: T,
@@ -121,28 +118,28 @@ mod tests {
     use crate::Middleware;
     use ethers_core::types::U64;
 
-    #[tokio::test]
-    async fn pushes_request_and_response() {
+    #[test]
+    fn pushes_request_and_response() {
         let mock = MockProvider::new();
         mock.push(U64::from(12)).unwrap();
-        let block: U64 = mock.request("eth_blockNumber", ()).await.unwrap();
+        let block: U64 = mock.request("eth_blockNumber", ()).unwrap();
         mock.assert_request("eth_blockNumber", ()).unwrap();
         assert_eq!(block.as_u64(), 12);
     }
 
-    #[tokio::test]
-    async fn empty_responses() {
+    #[test]
+    fn empty_responses() {
         let mock = MockProvider::new();
         // tries to get a response without pushing a response
-        let err = mock.request::<_, ()>("eth_blockNumber", ()).await.unwrap_err();
+        let err = mock.request::<_, ()>("eth_blockNumber", ()).unwrap_err();
         match err {
             MockError::EmptyResponses => {}
             _ => panic!("expected empty responses"),
         };
     }
 
-    #[tokio::test]
-    async fn empty_requests() {
+    #[test]
+    fn empty_requests() {
         let mock = MockProvider::new();
         // tries to assert a request without making one
         let err = mock.assert_request("eth_blockNumber", ()).unwrap_err();
@@ -152,12 +149,12 @@ mod tests {
         };
     }
 
-    #[tokio::test]
-    async fn composes_with_provider() {
+    #[test]
+    fn composes_with_provider() {
         let (provider, mock) = crate::Provider::mocked();
 
         mock.push(U64::from(12)).unwrap();
-        let block = provider.get_block_number().await.unwrap();
+        let block = provider.get_block_number().unwrap();
         assert_eq!(block.as_u64(), 12);
     }
 }
