@@ -1,7 +1,7 @@
 use super::{Transformer, TransformerError};
 use async_trait::async_trait;
 use ethers_core::types::{transaction::eip2718::TypedTransaction, *};
-use ethers_providers::{FromErr, Middleware, PendingTransaction};
+use ethers_providers::{FromErr, Middleware};
 use thiserror::Error;
 
 #[derive(Debug)]
@@ -52,23 +52,5 @@ where
 
     fn inner(&self) -> &M {
         &self.inner
-    }
-
-    async fn send_transaction<Tx: Into<TypedTransaction> + Send + Sync>(
-        &self,
-        tx: Tx,
-        block: Option<BlockId>,
-    ) -> Result<PendingTransaction<'_, Self::Provider>, Self::Error> {
-        let mut tx = tx.into();
-
-        // construct the appropriate proxy tx.
-        self.transformer.transform(&mut tx)?;
-
-        self.fill_transaction(&mut tx, block).await?;
-        // send the proxy tx.
-        self.inner
-            .send_transaction(tx, block)
-            .await
-            .map_err(TransformerMiddlewareError::MiddlewareError)
     }
 }

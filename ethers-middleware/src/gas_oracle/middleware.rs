@@ -1,7 +1,7 @@
 use super::{GasOracle, GasOracleError};
 use async_trait::async_trait;
 use ethers_core::types::{transaction::eip2718::TypedTransaction, *};
-use ethers_providers::{FromErr, Middleware, PendingTransaction};
+use ethers_providers::{FromErr, Middleware};
 use thiserror::Error;
 
 #[derive(Debug)]
@@ -98,15 +98,5 @@ where
         _: Option<fn(U256, Vec<Vec<U256>>) -> (U256, U256)>,
     ) -> Result<(U256, U256), Self::Error> {
         Ok(self.gas_oracle.estimate_eip1559_fees().await?)
-    }
-
-    async fn send_transaction<T: Into<TypedTransaction> + Send + Sync>(
-        &self,
-        tx: T,
-        block: Option<BlockId>,
-    ) -> Result<PendingTransaction<'_, Self::Provider>, Self::Error> {
-        let mut tx = tx.into();
-        self.fill_transaction(&mut tx, block).await?;
-        self.inner.send_transaction(tx, block).await.map_err(MiddlewareError::MiddlewareError)
     }
 }

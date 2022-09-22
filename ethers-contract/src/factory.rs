@@ -125,23 +125,6 @@ impl<M: Middleware, C: From<Contract<M>>> ContractDeployer<M, C> {
         self.deployer.call_raw()
     }
 
-    /// Broadcasts the contract deployment transaction and after waiting for it to
-    /// be sufficiently confirmed (default: 1), it returns a new instance of the contract type at
-    /// the deployed contract's address.
-    pub async fn send(self) -> Result<C, ContractError<M>> {
-        let contract = self.deployer.send().await?;
-        Ok(C::from(contract))
-    }
-
-    /// Broadcasts the contract deployment transaction and after waiting for it to
-    /// be sufficiently confirmed (default: 1), it returns a new instance of the contract type at
-    /// the deployed contract's address and the corresponding
-    /// [`TransactionReceipt`](ethers_core::types::TransactionReceipt).
-    pub async fn send_with_receipt(self) -> Result<(C, TransactionReceipt), ContractError<M>> {
-        let (contract, receipt) = self.deployer.send_with_receipt().await?;
-        Ok((C::from(contract), receipt))
-    }
-
     /// Returns a reference to the deployer's ABI
     pub fn abi(&self) -> &Abi {
         self.deployer.abi()
@@ -223,39 +206,6 @@ impl<M: Middleware> Deployer<M> {
         self.client.provider().call_raw(&self.tx).block(self.block.into())
     }
 
-    /// Broadcasts the contract deployment transaction and after waiting for it to
-    /// be sufficiently confirmed (default: 1), it returns a [`Contract`](crate::Contract)
-    /// struct at the deployed contract's address.
-    pub async fn send(self) -> Result<Contract<M>, ContractError<M>> {
-        let (contract, _) = self.send_with_receipt().await?;
-        Ok(contract)
-    }
-
-    /// Broadcasts the contract deployment transaction and after waiting for it to
-    /// be sufficiently confirmed (default: 1), it returns a tuple with
-    /// the [`Contract`](crate::Contract) struct at the deployed contract's address
-    /// and the corresponding [`TransactionReceipt`](ethers_core::types::TransactionReceipt).
-    pub async fn send_with_receipt(
-        self,
-    ) -> Result<(Contract<M>, TransactionReceipt), ContractError<M>> {
-        let pending_tx = self
-            .client
-            .send_transaction(self.tx, Some(self.block.into()))
-            .await
-            .map_err(ContractError::MiddlewareError)?;
-
-        // TODO: Should this be calculated "optimistically" by address/nonce?
-        let receipt = pending_tx
-            .confirmations(self.confs)
-            .await
-            .map_err(|_| ContractError::ContractNotDeployed)?
-            .ok_or(ContractError::ContractNotDeployed)?;
-        let address = receipt.contract_address.ok_or(ContractError::ContractNotDeployed)?;
-
-        let contract = Contract::new(address, self.abi.clone(), self.client);
-        Ok((contract, receipt))
-    }
-
     /// Returns a reference to the deployer's ABI
     pub fn abi(&self) -> &Abi {
         &self.abi
@@ -267,47 +217,6 @@ impl<M: Middleware> Deployer<M> {
     }
 }
 
-/// To deploy a contract to the Ethereum network, a `ContractFactory` can be
-/// created which manages the Contract bytecode and Application Binary Interface
-/// (ABI), usually generated from the Solidity compiler.
-///
-/// Once the factory's deployment transaction is mined with sufficient confirmations,
-/// the [`Contract`](crate::Contract) object is returned.
-///
-/// # Example
-///
-/// ```no_run
-/// use ethers_solc::Solc;
-/// use ethers_contract::ContractFactory;
-/// use ethers_providers::{Provider, Http};
-/// use ethers_signers::Wallet;
-/// use std::convert::TryFrom;
-///
-/// # async fn foo() -> Result<(), Box<dyn std::error::Error>> {
-/// // first we'll compile the contract (you can alternatively compile it yourself
-/// // and pass the ABI/Bytecode
-/// let compiled = Solc::default().compile_source("./tests/contract.sol").unwrap();
-/// let contract = compiled
-///     .get("./tests/contract.sol", "SimpleStorage")
-///     .expect("could not find contract");
-///
-/// // connect to the network
-/// let client = Provider::<Http>::try_from("http://localhost:8545").unwrap();
-/// let client = std::sync::Arc::new(client);
-///
-/// // create a factory which will be used to deploy instances of the contract
-/// let factory = ContractFactory::new(contract.abi.unwrap().clone(), contract.bytecode().unwrap().clone(), client);
-///
-/// // The deployer created by the `deploy` call exposes a builder which gets consumed
-/// // by the async `send` call
-/// let contract = factory
-///     .deploy("initial value".to_string())?
-///     .confirmations(0usize)
-///     .send()
-///     .await?;
-/// println!("{}", contract.address());
-/// # Ok(())
-/// # }
 #[derive(Debug)]
 pub struct ContractFactory<M> {
     client: Arc<M>,

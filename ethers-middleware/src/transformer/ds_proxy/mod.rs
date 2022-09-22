@@ -19,44 +19,6 @@ const DS_PROXY_EXECUTE_CODE: &str =
     "function execute(bytes memory code, bytes memory data) public payable returns (address target, bytes memory response)";
 
 #[derive(Debug, Clone)]
-/// Represents the DsProxy type that implements the [Transformer](super::Transformer) trait.
-///
-/// # Example
-///
-/// ```no_run
-/// use ethers_middleware::{SignerMiddleware, transformer::DsProxy};
-/// use ethers_signers::LocalWallet;
-/// use ethers_providers::{Provider, Http};
-/// use ethers_core::types::{Address, Bytes};
-/// use std::{convert::TryFrom, sync::Arc};
-///
-/// type HttpWallet = SignerMiddleware<Provider<Http>, LocalWallet>;
-///
-/// # async fn foo() -> Result<(), Box<dyn std::error::Error>> {
-/// // instantiate client that can sign transactions.
-/// let wallet: LocalWallet = "380eb0f3d505f087e438eca80bc4df9a7faa24f868e69fc0440261a0fc0567dc"
-///     .parse()?;
-/// let provider = Provider::<Http>::try_from("http://localhost:8545")?;
-/// let client = SignerMiddleware::new(provider, wallet);
-///
-/// # let ds_proxy_addr = Address::random();
-/// // instantiate DsProxy by providing its address.
-/// let ds_proxy = DsProxy::new(ds_proxy_addr);
-///
-/// // execute a transaction via the DsProxy instance.
-/// let target = Address::random();
-/// let calldata: Bytes = vec![0u8; 32].into();
-/// let contract_call = ds_proxy.execute::<HttpWallet, Arc<HttpWallet>, Address>(
-///     Arc::new(client),
-///     target,
-///     calldata,
-/// )?;
-/// let pending_tx = contract_call.send().await?;
-/// let _tx_receipt = pending_tx.await?;
-///
-/// # Ok(())
-/// # }
-/// ```
 pub struct DsProxy {
     address: Address,
     contract: BaseContract,
@@ -76,68 +38,6 @@ impl DsProxy {
     /// The address of the DsProxy instance.
     pub fn address(&self) -> Address {
         self.address
-    }
-}
-
-impl DsProxy {
-    /// Deploys a new DsProxy contract to the Ethereum network.
-    pub async fn build<M: Middleware, C: Into<Arc<M>>>(
-        client: C,
-        factory: Option<Address>,
-        owner: Address,
-    ) -> Result<Self, ContractError<M>> {
-        let client = client.into();
-
-        // Fetch chain id and the corresponding address of DsProxyFactory contract
-        // preference is given to DsProxyFactory contract's address if provided
-        // otherwise check the address book for the client's chain ID.
-        let factory: Address = match factory {
-            Some(addr) => addr,
-            None => {
-                let chain_id =
-                    client.get_chainid().await.map_err(ContractError::MiddlewareError)?;
-                match ADDRESS_BOOK.get(&chain_id) {
-                    Some(addr) => *addr,
-                    None => panic!(
-                        "Must either be a supported Network ID or provide DsProxyFactory contract address"
-                    ),
-                }
-            }
-        };
-
-        // broadcast the tx to deploy a new DsProxy.
-        let ds_proxy_factory = DsProxyFactory::new(factory, client);
-        let tx_receipt = ds_proxy_factory
-            .build(owner)
-            .legacy()
-            .send()
-            .await?
-            .await
-            .map_err(ContractError::ProviderError)?
-            .ok_or(ContractError::ContractNotDeployed)?;
-
-        // decode the event log to get the address of the deployed contract.
-        if tx_receipt.status == Some(U64::from(1u64)) {
-            // fetch the appropriate log. Only one event is logged by the DsProxyFactory contract,
-            // the others are logged by the deployed DsProxy contract and hence can be ignored.
-            let log = tx_receipt
-                .logs
-                .iter()
-                .find(|i| i.address == factory)
-                .ok_or(ContractError::ContractNotDeployed)?;
-
-            // decode the log.
-            let created_filter: CreatedFilter =
-                ds_proxy_factory.decode_event("Created", log.topics.clone(), log.data.clone())?;
-
-            // instantiate the ABI and return.
-            let contract = parse_abi(&[DS_PROXY_EXECUTE_TARGET, DS_PROXY_EXECUTE_CODE])
-                .expect("could not parse ABI")
-                .into();
-            Ok(Self { address: created_filter.proxy, contract })
-        } else {
-            Err(ContractError::ContractNotDeployed)
-        }
     }
 }
 

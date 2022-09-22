@@ -59,64 +59,6 @@ where
     R: 'a,
     E: 'a,
 {
-    /// This function will attempt to pull events from both event streams. Each
-    /// stream will be polled in a round-robin fashion, and whenever a stream is
-    /// ready to yield an event that event is yielded.
-    ///
-    /// After one of the two event streams completes, the remaining one will be
-    /// polled exclusively. The returned stream completes when both input
-    /// streams have completed.
-    ///
-    ///
-    /// Note that this function consumes both streams and returns a wrapped
-    /// version of them.
-    /// The item of the wrapped stream is an `Either`, and the items that the `self` streams yields
-    /// will be stored in the left-hand variant of that `Either` and the other stream's (`st`) items
-    /// will be wrapped into the right-hand variant of that `Either`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # #[cfg(feature = "abigen")]
-    /// # async fn test<M:ethers_providers::Middleware>(contract: ethers_contract::Contract<M>) {
-    /// # use ethers_core::types::*;
-    /// # use futures_util::stream::StreamExt;
-    /// # use futures_util::future::Either;
-    /// # use ethers_contract::{Contract, ContractFactory, EthEvent};
-    ///
-    /// #[derive(Clone, Debug, EthEvent)]
-    /// pub struct Approval {
-    ///     #[ethevent(indexed)]
-    ///     pub token_owner: Address,
-    ///     #[ethevent(indexed)]
-    ///     pub spender: Address,
-    ///     pub tokens: U256,
-    /// }
-    ///
-    /// #[derive(Clone, Debug, EthEvent)]
-    /// pub struct Transfer {
-    ///     #[ethevent(indexed)]
-    ///     pub from: Address,
-    ///     #[ethevent(indexed)]
-    ///     pub to: Address,
-    ///     pub tokens: U256,
-    /// }
-    ///
-    ///
-    /// let ev1 = contract.event::<Approval>().from_block(1337).to_block(2000);
-    /// let ev2 = contract.event::<Transfer>();
-    ///
-    /// let mut events = ev1.stream().await.unwrap().select(ev2.stream().await.unwrap()).ok();
-    ///
-    /// while let Some(either) = events.next().await {
-    ///     match either {
-    ///         Either::Left(approval) => { let Approval{token_owner,spender,tokens} = approval; }
-    ///         Either::Right(transfer) => { let Transfer{from,to,tokens} = transfer; }
-    ///     }
-    /// }
-    ///
-    /// # }
-    /// ```
     pub fn select<St>(self, st: St) -> SelectEvent<SelectEither<'a, Result<R, E>, St::Item>>
     where
         St: Stream + Unpin + 'a,

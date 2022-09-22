@@ -47,11 +47,3 @@ pub fn connect(anvil: &AnvilInstance, idx: usize) -> Arc<Provider<Http>> {
         .with_sender(sender);
     Arc::new(provider)
 }
-
-/// Launches a Anvil instance and deploys the SimpleStorage contract
-pub async fn deploy<M: Middleware>(client: Arc<M>, abi: Abi, bytecode: Bytes) -> Contract<M> {
-    let factory = ContractFactory::new(abi, bytecode, client);
-    let deployer = factory.deploy("initial value".to_string()).unwrap();
-    deployer.call().await.unwrap();
-    deployer.legacy().send().await.unwrap()
-}

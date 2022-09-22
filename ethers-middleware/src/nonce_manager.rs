@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ethers_core::types::{transaction::eip2718::TypedTransaction, *};
-use ethers_providers::{FromErr, Middleware, PendingTransaction};
+use ethers_providers::{FromErr, Middleware};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use thiserror::Error;
 
@@ -105,37 +105,5 @@ where
         }
 
         Ok(self.inner().fill_transaction(tx, block).await.map_err(FromErr::from)?)
-    }
-
-    /// Signs and broadcasts the transaction. The optional parameter `block` can be passed so that
-    /// gas cost and nonce calculations take it into account. For simple transactions this can be
-    /// left to `None`.
-    async fn send_transaction<T: Into<TypedTransaction> + Send + Sync>(
-        &self,
-        tx: T,
-        block: Option<BlockId>,
-    ) -> Result<PendingTransaction<'_, Self::Provider>, Self::Error> {
-        let mut tx = tx.into();
-
-        if tx.nonce().is_none() {
-            tx.set_nonce(self.get_transaction_count_with_manager(block).await?);
-        }
-
-        match self.inner.send_transaction(tx.clone(), block).await {
-            Ok(tx_hash) => Ok(tx_hash),
-            Err(err) => {
-                let nonce = self.get_transaction_count(self.address, block).await?;
-                if nonce != self.nonce.load(Ordering::SeqCst).into() {
-                    // try re-submitting the transaction with the correct nonce if there
-                    // was a nonce mismatch
-                    self.nonce.store(nonce.as_u64(), Ordering::SeqCst);
-                    tx.set_nonce(nonce);
-                    self.inner.send_transaction(tx, block).await.map_err(FromErr::from)
-                } else {
-                    // propagate the error otherwise
-                    Err(FromErr::from(err))
-                }
-            }
-        }
     }
 }

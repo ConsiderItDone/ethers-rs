@@ -11,7 +11,7 @@ use ethers_core::{
 };
 use ethers_providers::{
     call_raw::{CallBuilder, RawCall},
-    Middleware, PendingTransaction, ProviderError,
+    Middleware, ProviderError,
 };
 
 use std::{borrow::Cow, fmt::Debug, future::Future, marker::PhantomData, sync::Arc};
@@ -201,13 +201,5 @@ where
         } else {
             call
         }
-    }
-
-    /// Signs and broadcasts the provided transaction
-    pub async fn send(&self) -> Result<PendingTransaction<'_, M::Provider>, ContractError<M>> {
-        self.client
-            .send_transaction(self.tx.clone(), self.block)
-            .await
-            .map_err(ContractError::MiddlewareError)
     }
 }

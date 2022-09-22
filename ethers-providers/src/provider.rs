@@ -1,14 +1,10 @@
 use crate::{
     call_raw::CallBuilder,
     ens, erc, maybe,
-    pubsub::{PubsubClient, SubscriptionStream},
-    stream::{FilterWatcher, DEFAULT_LOCAL_POLL_INTERVAL, DEFAULT_POLL_INTERVAL},
-    FromErr, Http as HttpProvider, JsonRpcClient, JsonRpcClientWrapper, LogQuery, MockProvider,
-    PendingTransaction, QuorumProvider, RwClient, SyncingStatus,
+    FromErr, Http as HttpProvider, JsonRpcClient, LogQuery, MockProvider,
+    RwClient, SyncingStatus,
 };
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "ws"))]
-use crate::transports::Authorization;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::transports::{HttpRateLimitRetryPolicy, RetryClient};
 
@@ -155,9 +151,6 @@ pub enum FilterKind<'a> {
 
     /// `eth_newBlockFilter` filter
     NewBlocks,
-
-    /// `eth_newPendingTransactionFilter` filter
-    PendingTransactions,
 }
 
 // JSON RPC bindings
@@ -593,32 +586,6 @@ impl<P: JsonRpcClient> Middleware for Provider<P> {
         let block = utils::serialize(&block.unwrap_or_else(|| BlockNumber::Latest.into()));
         self.request("eth_createAccessList", [tx, block]).await
     }
-
-    /// Sends the transaction to the entire Ethereum network and returns the transaction's hash
-    /// This will consume gas from the account that signed the transaction.
-    async fn send_transaction<T: Into<TypedTransaction> + Send + Sync>(
-        &self,
-        tx: T,
-        block: Option<BlockId>,
-    ) -> Result<PendingTransaction<'_, P>, ProviderError> {
-        let mut tx = tx.into();
-        self.fill_transaction(&mut tx, block).await?;
-        let tx_hash = self.request("eth_sendTransaction", [tx]).await?;
-
-        Ok(PendingTransaction::new(tx_hash, self))
-    }
-
-    /// Send the raw RLP encoded transaction to the entire Ethereum network and returns the
-    /// transaction's hash This will consume gas from the account that signed the transaction.
-    async fn send_raw_transaction<'a>(
-        &'a self,
-        tx: Bytes,
-    ) -> Result<PendingTransaction<'a, P>, ProviderError> {
-        let rlp = utils::serialize(&tx);
-        let tx_hash = self.request("eth_sendRawTransaction", [rlp]).await?;
-        Ok(PendingTransaction::new(tx_hash, self))
-    }
-
     /// The JSON-RPC provider is at the bottom-most position in the middleware stack. Here we check
     /// if it has the key for the sender address unlocked, as well as supports the `eth_sign` call.
     async fn is_signer(&self) -> bool {
@@ -667,38 +634,11 @@ impl<P: JsonRpcClient> Middleware for Provider<P> {
         LogQuery::new(self, filter).with_page_size(page_size)
     }
 
-    /// Streams matching filter logs
-    async fn watch<'a>(
-        &'a self,
-        filter: &Filter,
-    ) -> Result<FilterWatcher<'a, P, Log>, ProviderError> {
-        let id = self.new_filter(FilterKind::Logs(filter)).await?;
-        let filter = FilterWatcher::new(id, self).interval(self.get_interval());
-        Ok(filter)
-    }
-
-    /// Streams new block hashes
-    async fn watch_blocks(&self) -> Result<FilterWatcher<'_, P, H256>, ProviderError> {
-        let id = self.new_filter(FilterKind::NewBlocks).await?;
-        let filter = FilterWatcher::new(id, self).interval(self.get_interval());
-        Ok(filter)
-    }
-
-    /// Streams pending transactions
-    async fn watch_pending_transactions(
-        &self,
-    ) -> Result<FilterWatcher<'_, P, H256>, ProviderError> {
-        let id = self.new_filter(FilterKind::PendingTransactions).await?;
-        let filter = FilterWatcher::new(id, self).interval(self.get_interval());
-        Ok(filter)
-    }
-
     /// Creates a filter object, based on filter options, to notify when the state changes (logs).
     /// To check if the state has changed, call `get_filter_changes` with the filter id.
     async fn new_filter(&self, filter: FilterKind<'_>) -> Result<U256, ProviderError> {
         let (method, args) = match filter {
             FilterKind::NewBlocks => ("eth_newBlockFilter", vec![]),
-            FilterKind::PendingTransactions => ("eth_newPendingTransactionFilter", vec![]),
             FilterKind::Logs(filter) => ("eth_newFilter", vec![utils::serialize(&filter)]),
         };
 
@@ -1091,72 +1031,6 @@ impl<P: JsonRpcClient> Middleware for Provider<P> {
         self.request("trace_transaction", vec![hash]).await
     }
 
-    async fn subscribe<T, R>(
-        &self,
-        params: T,
-    ) -> Result<SubscriptionStream<'_, P, R>, ProviderError>
-    where
-        T: Debug + Serialize + Send + Sync,
-        R: DeserializeOwned + Send + Sync,
-        P: PubsubClient,
-    {
-        let id: U256 = self.request("eth_subscribe", params).await?;
-        SubscriptionStream::new(id, self).map_err(Into::into)
-    }
-
-    async fn unsubscribe<T>(&self, id: T) -> Result<bool, ProviderError>
-    where
-        T: Into<U256> + Send + Sync,
-        P: PubsubClient,
-    {
-        self.request("eth_unsubscribe", [id.into()]).await
-    }
-
-    async fn subscribe_blocks(
-        &self,
-    ) -> Result<SubscriptionStream<'_, P, Block<TxHash>>, ProviderError>
-    where
-        P: PubsubClient,
-    {
-        self.subscribe(["newHeads"]).await
-    }
-
-    async fn subscribe_pending_txs(
-        &self,
-    ) -> Result<SubscriptionStream<'_, P, TxHash>, ProviderError>
-    where
-        P: PubsubClient,
-    {
-        self.subscribe(["newPendingTransactions"]).await
-    }
-
-    async fn subscribe_logs<'a>(
-        &'a self,
-        filter: &Filter,
-    ) -> Result<SubscriptionStream<'a, P, Log>, ProviderError>
-    where
-        P: PubsubClient,
-    {
-        let loaded_logs = match filter.block_option {
-            FilterBlockOption::Range { from_block, to_block: _ } => {
-                if from_block.is_none() {
-                    vec![]
-                } else {
-                    self.get_logs(filter).await?
-                }
-            }
-            FilterBlockOption::AtBlockHash(_block_hash) => self.get_logs(filter).await?,
-        };
-        let loaded_logs = VecDeque::from(loaded_logs);
-
-        let logs = utils::serialize(&"logs"); // TODO: Make this a static
-        let filter = utils::serialize(filter);
-        self.subscribe([logs, filter]).await.map(|mut stream| {
-            stream.set_loaded_elements(loaded_logs);
-            stream
-        })
-    }
-
     async fn fee_history<T: Into<U256> + Send + Sync>(
         &self,
         block_count: T,
@@ -1308,39 +1182,6 @@ impl<P: JsonRpcClient> Provider<P> {
         self
     }
 
-    /// Gets the polling interval which the provider currently uses for event filters
-    /// and pending transactions (default: 7 seconds)
-    pub fn get_interval(&self) -> Duration {
-        self.interval.unwrap_or(DEFAULT_POLL_INTERVAL)
-    }
-}
-
-#[cfg(feature = "ws")]
-impl Provider<crate::Ws> {
-    /// Direct connection to a websocket endpoint
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn connect(
-        url: impl tokio_tungstenite::tungstenite::client::IntoClientRequest + Unpin,
-    ) -> Result<Self, ProviderError> {
-        let ws = crate::Ws::connect(url).await?;
-        Ok(Self::new(ws))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn connect_with_auth(
-        url: impl tokio_tungstenite::tungstenite::client::IntoClientRequest + Unpin,
-        auth: Authorization,
-    ) -> Result<Self, ProviderError> {
-        let ws = crate::Ws::connect_with_auth(url, auth).await?;
-        Ok(Self::new(ws))
-    }
-
-    /// Direct connection to a websocket endpoint
-    #[cfg(target_arch = "wasm32")]
-    pub async fn connect(url: &str) -> Result<Self, ProviderError> {
-        let ws = crate::Ws::connect(url).await?;
-        Ok(Self::new(ws))
-    }
 }
 
 #[cfg(all(target_family = "unix", feature = "ipc"))]
@@ -1374,13 +1215,6 @@ where
     /// Creates a new [Provider] with a [RwClient]
     pub fn rw(r: Read, w: Write) -> Self {
         Self::new(RwClient::new(r, w))
-    }
-}
-
-impl<T: JsonRpcClientWrapper> Provider<QuorumProvider<T>> {
-    /// Provider that uses a quorum
-    pub fn quorum(inner: QuorumProvider<T>) -> Self {
-        Self::new(inner)
     }
 }
 
@@ -1457,106 +1291,6 @@ impl Provider<RetryClient<HttpProvider>> {
             max_retry,
             initial_backoff,
         )))
-    }
-}
-
-mod sealed {
-    use crate::{Http, Provider};
-    /// private trait to ensure extension trait is not implement outside of this crate
-    pub trait Sealed {}
-    impl Sealed for Provider<Http> {}
-}
-
-/// Extension trait for `Provider`
-///
-/// **Note**: this is currently sealed until <https://github.com/gakonst/ethers-rs/pull/1267> is finalized
-///
-/// # Example
-///
-/// Automatically configure poll interval via `eth_getChainId`
-///
-/// Note that this will send an RPC to retrieve the chain id.
-///
-/// ```
-///  # use ethers_providers::{Http, Provider, ProviderExt};
-///  # async fn t() {
-/// let http_provider = Provider::<Http>::connect("https://eth-mainnet.alchemyapi.io/v2/API_KEY").await;
-/// # }
-/// ```
-///
-/// This is essentially short for
-///
-/// ```
-/// use std::convert::TryFrom;
-/// use ethers_core::types::Chain;
-/// use ethers_providers::{Http, Provider, ProviderExt};
-/// let http_provider = Provider::<Http>::try_from("https://eth-mainnet.alchemyapi.io/v2/API_KEY").unwrap().set_chain(Chain::Mainnet);
-/// ```
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait ProviderExt: sealed::Sealed {
-    /// The error type that can occur when creating a provider
-    type Error: Debug;
-
-    /// Creates a new instance connected to the given `url`, exit on error
-    async fn connect(url: &str) -> Self
-    where
-        Self: Sized,
-    {
-        Self::try_connect(url).await.unwrap()
-    }
-
-    /// Try to create a new `Provider`
-    async fn try_connect(url: &str) -> Result<Self, Self::Error>
-    where
-        Self: Sized;
-
-    /// Customize `Provider` settings for chain.
-    ///
-    /// E.g. [`Chain::average_blocktime_hint()`] returns the average block time which can be used to
-    /// tune the polling interval.
-    ///
-    /// Returns the customized `Provider`
-    fn for_chain(mut self, chain: impl Into<Chain>) -> Self
-    where
-        Self: Sized,
-    {
-        self.set_chain(chain);
-        self
-    }
-
-    /// Customized `Provider` settings for chain
-    fn set_chain(&mut self, chain: impl Into<Chain>) -> &mut Self;
-}
-
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-impl ProviderExt for Provider<HttpProvider> {
-    type Error = ParseError;
-
-    async fn try_connect(url: &str) -> Result<Self, Self::Error>
-    where
-        Self: Sized,
-    {
-        let mut provider = Provider::try_from(url)?;
-        if is_local_endpoint(url) {
-            provider.set_interval(DEFAULT_LOCAL_POLL_INTERVAL);
-        } else if let Some(chain) =
-            provider.get_chainid().await.ok().and_then(|id| Chain::try_from(id).ok())
-        {
-            provider.set_chain(chain);
-        }
-
-        Ok(provider)
-    }
-
-    fn set_chain(&mut self, chain: impl Into<Chain>) -> &mut Self {
-        let chain = chain.into();
-        if let Some(blocktime) = chain.average_blocktime_hint() {
-            // use half of the block time
-            self.set_interval(blocktime / 2);
-        }
-        self
     }
 }
 
@@ -1839,26 +1573,6 @@ mod tests {
 
     #[tokio::test]
     #[cfg_attr(feature = "celo", ignore)]
-    async fn test_new_block_filter() {
-        let num_blocks = 3;
-        let geth = Anvil::new().block_time(2u64).spawn();
-        let provider = Provider::<Http>::try_from(geth.endpoint())
-            .unwrap()
-            .interval(Duration::from_millis(1000));
-
-        let start_block = provider.get_block_number().await.unwrap();
-
-        let stream = provider.watch_blocks().await.unwrap().stream();
-
-        let hashes: Vec<H256> = stream.take(num_blocks).collect::<Vec<H256>>().await;
-        for (i, hash) in hashes.iter().enumerate() {
-            let block = provider.get_block(start_block + i as u64 + 1).await.unwrap().unwrap();
-            assert_eq!(*hash, block.hash.unwrap());
-        }
-    }
-
-    #[tokio::test]
-    #[cfg_attr(feature = "celo", ignore)]
     async fn test_is_signer() {
         use ethers_core::utils::Anvil;
         use std::str::FromStr;
@@ -1882,49 +1596,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_new_pending_txs_filter() {
-        let num_txs = 5;
-
-        let geth = Anvil::new().block_time(2u64).spawn();
-        let provider = Provider::<Http>::try_from(geth.endpoint())
-            .unwrap()
-            .interval(Duration::from_millis(1000));
-        let accounts = provider.get_accounts().await.unwrap();
-
-        let stream = provider.watch_pending_transactions().await.unwrap().stream();
-
-        let mut tx_hashes = Vec::new();
-        let tx = TransactionRequest::new().from(accounts[0]).to(accounts[0]).value(1e18 as u64);
-
-        for _ in 0..num_txs {
-            tx_hashes.push(provider.send_transaction(tx.clone(), None).await.unwrap());
-        }
-
-        let hashes: Vec<H256> = stream.take(num_txs).collect::<Vec<H256>>().await;
-        assert_eq!(tx_hashes, hashes);
-    }
-
-    #[tokio::test]
-    async fn receipt_on_unmined_tx() {
-        use ethers_core::{
-            types::TransactionRequest,
-            utils::{parse_ether, Anvil},
-        };
-        let anvil = Anvil::new().block_time(2u64).spawn();
-        let provider = Provider::<Http>::try_from(anvil.endpoint()).unwrap();
-
-        let accounts = provider.get_accounts().await.unwrap();
-        let tx = TransactionRequest::pay(accounts[0], parse_ether(1u64).unwrap()).from(accounts[0]);
-        let pending_tx = provider.send_transaction(tx, None).await.unwrap();
-
-        assert!(provider.get_transaction_receipt(*pending_tx).await.unwrap().is_none());
-
-        let hash = *pending_tx;
-        let receipt = pending_tx.await.unwrap().unwrap();
-        assert_eq!(receipt.transaction_hash, hash);
-    }
-
-    #[tokio::test]
     async fn parity_block_receipts() {
         let url = match std::env::var("PARITY") {
             Ok(inner) => inner,
@@ -1933,20 +1604,6 @@ mod tests {
         let provider = Provider::<Http>::try_from(url.as_str()).unwrap();
         let receipts = provider.parity_block_receipts(10657200).await.unwrap();
         assert!(!receipts.is_empty());
-    }
-
-    #[tokio::test]
-    // Celo blocks can not get parsed when used with Ganache
-    #[cfg(not(feature = "celo"))]
-    async fn block_subscribe() {
-        use ethers_core::utils::Anvil;
-        use futures_util::StreamExt;
-        let anvil = Anvil::new().block_time(2u64).spawn();
-        let provider = Provider::connect(anvil.ws_endpoint()).await.unwrap();
-
-        let stream = provider.subscribe_blocks().await.unwrap();
-        let blocks = stream.take(3).map(|x| x.number.unwrap().as_u64()).collect::<Vec<_>>().await;
-        assert_eq!(blocks, vec![1, 2, 3]);
     }
 
     #[tokio::test]
@@ -1960,47 +1617,6 @@ mod tests {
         let history =
             provider.fee_history(10u64, BlockNumber::Latest, &[10.0, 40.0]).await.unwrap();
         dbg!(&history);
-    }
-
-    #[tokio::test]
-    #[ignore]
-    #[cfg(feature = "ws")]
-    async fn test_trace_call_many() {
-        use ethers_core::types::H160;
-
-        // TODO: Implement ErigonInstance, so it'd be possible to test this.
-        let provider = Provider::new(crate::Ws::connect("ws://127.0.0.1:8545").await.unwrap());
-        let traces = provider
-            .trace_call_many(
-                vec![
-                    (
-                        TransactionRequest::new()
-                            .from(Address::zero())
-                            .to("0x0000000000000000000000000000000000000001"
-                                .parse::<H160>()
-                                .unwrap())
-                            .value(U256::from(10000000000000000u128)),
-                        vec![TraceType::StateDiff],
-                    ),
-                    (
-                        TransactionRequest::new()
-                            .from(
-                                "0x0000000000000000000000000000000000000001"
-                                    .parse::<H160>()
-                                    .unwrap(),
-                            )
-                            .to("0x0000000000000000000000000000000000000002"
-                                .parse::<H160>()
-                                .unwrap())
-                            .value(U256::from(10000000000000000u128)),
-                        vec![TraceType::StateDiff],
-                    ),
-                ],
-                None,
-            )
-            .await
-            .unwrap();
-        dbg!(traces);
     }
 
     #[tokio::test]

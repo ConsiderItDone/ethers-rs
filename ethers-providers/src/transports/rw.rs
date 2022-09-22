@@ -26,19 +26,6 @@ pub struct RwClient<Read, Write> {
 }
 
 impl<Read, Write> RwClient<Read, Write> {
-    /// Creates a new client using two different clients
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use url::Url;
-    ///  async fn t(){
-    /// use ethers_providers::{Http, RwClient, Ws};
-    /// let http = Http::new(Url::parse("http://localhost:8545").unwrap());
-    /// let ws = Ws::connect("ws://localhost:8545").await.unwrap();
-    /// let rw = RwClient::new(http, ws);
-    /// # }
-    /// ```
     pub fn new(r: Read, w: Write) -> RwClient<Read, Write> {
         Self { r, w }
     }

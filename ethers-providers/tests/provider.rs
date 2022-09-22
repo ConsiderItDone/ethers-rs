@@ -33,57 +33,6 @@ mod eth_tests {
             .starts_with("Geth/v"));
     }
 
-    // Without TLS this would error with "TLS Support not compiled in"
-    #[tokio::test]
-    async fn ssl_websocket() {
-        let provider = RINKEBY.ws().await;
-        let _number = provider.get_block_number().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn watch_blocks_websocket() {
-        use ethers_core::types::H256;
-        use ethers_providers::{StreamExt, Ws};
-
-        let anvil = Anvil::new().block_time(2u64).spawn();
-        let (ws, _) = tokio_tungstenite::connect_async(anvil.ws_endpoint()).await.unwrap();
-        let provider = Provider::new(Ws::new(ws)).interval(Duration::from_millis(500u64));
-
-        let stream = provider.watch_blocks().await.unwrap().stream();
-
-        let _blocks = stream.take(3usize).collect::<Vec<H256>>().await;
-        let _number = provider.get_block_number().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn pending_txs_with_confirmations_anvil() {
-        let anvil = Anvil::new().block_time(2u64).spawn();
-        let provider = Provider::<Http>::try_from(anvil.endpoint())
-            .unwrap()
-            .interval(Duration::from_millis(500u64));
-        let accounts = provider.get_accounts().await.unwrap();
-        generic_pending_txs_test(provider, accounts[0]).await;
-    }
-
-    #[tokio::test]
-    async fn websocket_pending_txs_with_confirmations_anvil() {
-        use ethers_providers::Ws;
-        let anvil = Anvil::new().block_time(2u64).spawn();
-        let ws = Ws::connect(anvil.ws_endpoint()).await.unwrap();
-        let provider = Provider::new(ws);
-        let accounts = provider.get_accounts().await.unwrap();
-        generic_pending_txs_test(provider, accounts[0]).await;
-    }
-
-    async fn generic_pending_txs_test<M: Middleware>(provider: M, who: Address) {
-        let tx = TransactionRequest::new().to(who).from(who);
-        let pending_tx = provider.send_transaction(tx, None).await.unwrap();
-        let tx_hash = *pending_tx;
-        let receipt = pending_tx.confirmations(3).await.unwrap().unwrap();
-        // got the correct receipt
-        assert_eq!(receipt.transaction_hash, tx_hash);
-    }
-
     #[tokio::test]
     async fn eip1559_fee_estimation() {
         let provider = ethers_providers::MAINNET.provider();
@@ -142,16 +91,5 @@ mod celo_tests {
                 .into(),
             }
         );
-    }
-
-    #[tokio::test]
-    async fn watch_blocks() {
-        let provider = Provider::<Http>::try_from("https://alfajores-forno.celo-testnet.org")
-            .unwrap()
-            .interval(Duration::from_millis(2000u64));
-
-        let stream = provider.watch_blocks().await.unwrap().stream();
-
-        let _blocks = stream.take(3usize).collect::<Vec<H256>>().await;
     }
 }

@@ -30,31 +30,6 @@ impl GasOracle for FakeGasOracle {
 }
 
 #[tokio::test]
-async fn using_gas_oracle() {
-    let anvil = Anvil::new().spawn();
-
-    let from = anvil.addresses()[0];
-
-    // connect to the network
-    let provider = Provider::<Http>::try_from(anvil.endpoint()).unwrap();
-
-    // initial base fee
-    let base_fee = 1_000_000_000u64;
-    // assign a gas oracle to use
-    let gas_oracle = FakeGasOracle { gas_price: (base_fee + 1337).into() };
-    let expected_gas_price = gas_oracle.fetch().await.unwrap();
-
-    let provider = GasOracleMiddleware::new(provider, gas_oracle);
-
-    // broadcast a transaction
-    let tx = TransactionRequest::new().from(from).to(Address::zero()).value(10000);
-    let tx_hash = provider.send_transaction(tx, None).await.unwrap();
-
-    let tx = provider.get_transaction(*tx_hash).await.unwrap().unwrap();
-    assert_eq!(tx.gas_price, Some(expected_gas_price));
-}
-
-#[tokio::test]
 async fn eth_gas_station() {
     // initialize and fetch gas estimates from EthGasStation
     let eth_gas_station_oracle = EthGasStation::default();

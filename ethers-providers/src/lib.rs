@@ -8,28 +8,13 @@ use futures_util::future::join_all;
 pub use transports::*;
 
 mod provider;
-pub use provider::{is_local_endpoint, FilterKind, Provider, ProviderError, ProviderExt};
+pub use provider::{is_local_endpoint, FilterKind, Provider, ProviderError};
 
 // ENS support
 pub mod ens;
 
-mod pending_transaction;
-pub use pending_transaction::PendingTransaction;
-
-mod pending_escalator;
-pub use pending_escalator::EscalatingPending;
-
 mod log_query;
 pub use log_query::{LogQuery, LogQueryError};
-
-mod stream;
-pub use futures_util::StreamExt;
-pub use stream::{
-    interval, FilterWatcher, TransactionStream, DEFAULT_LOCAL_POLL_INTERVAL, DEFAULT_POLL_INTERVAL,
-};
-
-mod pubsub;
-pub use pubsub::{PubsubClient, SubscriptionStream};
 
 pub mod call_raw;
 pub mod erc;
@@ -197,60 +182,6 @@ pub trait Middleware: Sync + Send + Debug {
         self.inner().get_block_number().await.map_err(FromErr::from)
     }
 
-    async fn send_transaction<T: Into<TypedTransaction> + Send + Sync>(
-        &self,
-        tx: T,
-        block: Option<BlockId>,
-    ) -> Result<PendingTransaction<'_, Self::Provider>, Self::Error> {
-        self.inner().send_transaction(tx, block).await.map_err(FromErr::from)
-    }
-
-    /// Send a transaction with a simple escalation policy.
-    ///
-    /// `policy` should be a boxed function that maps `original_gas_price`
-    /// and `number_of_previous_escalations` -> `new_gas_price`.
-    ///
-    /// e.g. `Box::new(|start, escalation_index| start * 1250.pow(escalations) /
-    /// 1000.pow(escalations))`
-    async fn send_escalating<'a>(
-        &'a self,
-        tx: &TypedTransaction,
-        escalations: usize,
-        policy: EscalationPolicy,
-    ) -> Result<EscalatingPending<'a, Self::Provider>, Self::Error> {
-        let mut original = tx.clone();
-        self.fill_transaction(&mut original, None).await?;
-
-        // set the nonce, if no nonce is found
-        if original.nonce().is_none() {
-            let nonce =
-                self.get_transaction_count(tx.from().copied().unwrap_or_default(), None).await?;
-            original.set_nonce(nonce);
-        }
-
-        let gas_price = original.gas_price().expect("filled");
-        let sign_futs: Vec<_> = (0..escalations)
-            .map(|i| {
-                let new_price = policy(gas_price, i);
-                let mut r = original.clone();
-                r.set_gas_price(new_price);
-                r
-            })
-            .map(|req| async move {
-                self.sign_transaction(&req, self.default_sender().unwrap_or_default())
-                    .await
-                    .map(|sig| req.rlp_signed(&sig))
-            })
-            .collect();
-
-        // we reverse for convenience. Ensuring that we can always just
-        // `pop()` the next tx off the back later
-        let mut signed = join_all(sign_futs).await.into_iter().collect::<Result<Vec<_>, _>>()?;
-        signed.reverse();
-
-        Ok(EscalatingPending::new(self.provider(), signed))
-    }
-
     async fn resolve_name(&self, ens_name: &str) -> Result<Address, Self::Error> {
         self.inner().resolve_name(ens_name).await.map_err(FromErr::from)
     }
@@ -380,13 +311,6 @@ pub trait Middleware: Sync + Send + Debug {
         self.inner().get_accounts().await.map_err(FromErr::from)
     }
 
-    async fn send_raw_transaction<'a>(
-        &'a self,
-        tx: Bytes,
-    ) -> Result<PendingTransaction<'a, Self::Provider>, Self::Error> {
-        self.inner().send_raw_transaction(tx).await.map_err(FromErr::from)
-    }
-
     /// This returns true if either the middleware stack contains a `SignerMiddleware`, or the
     /// JSON-RPC provider has an unlocked key that can sign using the `eth_sign` call. If none of
     /// the above conditions are met, then the middleware stack is not capable of signing data.
@@ -437,29 +361,12 @@ pub trait Middleware: Sync + Send + Debug {
         self.inner().uninstall_filter(id).await.map_err(FromErr::from)
     }
 
-    async fn watch<'a>(
-        &'a self,
-        filter: &Filter,
-    ) -> Result<FilterWatcher<'a, Self::Provider, Log>, Self::Error> {
-        self.inner().watch(filter).await.map_err(FromErr::from)
-    }
-
-    async fn watch_pending_transactions(
-        &self,
-    ) -> Result<FilterWatcher<'_, Self::Provider, H256>, Self::Error> {
-        self.inner().watch_pending_transactions().await.map_err(FromErr::from)
-    }
-
     async fn get_filter_changes<T, R>(&self, id: T) -> Result<Vec<R>, Self::Error>
     where
         T: Into<U256> + Send + Sync,
         R: Serialize + DeserializeOwned + Send + Sync + Debug,
     {
         self.inner().get_filter_changes(id).await.map_err(FromErr::from)
-    }
-
-    async fn watch_blocks(&self) -> Result<FilterWatcher<'_, Self::Provider, H256>, Self::Error> {
-        self.inner().watch_blocks().await.map_err(FromErr::from)
     }
 
     async fn get_code<T: Into<NameOrAddress> + Send + Sync>(
@@ -594,54 +501,6 @@ pub trait Middleware: Sync + Send + Debug {
         self.inner().parity_block_receipts(block).await.map_err(FromErr::from)
     }
 
-    async fn subscribe<T, R>(
-        &self,
-        params: T,
-    ) -> Result<SubscriptionStream<'_, Self::Provider, R>, Self::Error>
-    where
-        T: Debug + Serialize + Send + Sync,
-        R: DeserializeOwned + Send + Sync,
-        <Self as Middleware>::Provider: PubsubClient,
-    {
-        self.inner().subscribe(params).await.map_err(FromErr::from)
-    }
-
-    async fn unsubscribe<T>(&self, id: T) -> Result<bool, Self::Error>
-    where
-        T: Into<U256> + Send + Sync,
-        <Self as Middleware>::Provider: PubsubClient,
-    {
-        self.inner().unsubscribe(id).await.map_err(FromErr::from)
-    }
-
-    async fn subscribe_blocks(
-        &self,
-    ) -> Result<SubscriptionStream<'_, Self::Provider, Block<TxHash>>, Self::Error>
-    where
-        <Self as Middleware>::Provider: PubsubClient,
-    {
-        self.inner().subscribe_blocks().await.map_err(FromErr::from)
-    }
-
-    async fn subscribe_pending_txs(
-        &self,
-    ) -> Result<SubscriptionStream<'_, Self::Provider, TxHash>, Self::Error>
-    where
-        <Self as Middleware>::Provider: PubsubClient,
-    {
-        self.inner().subscribe_pending_txs().await.map_err(FromErr::from)
-    }
-
-    async fn subscribe_logs<'a>(
-        &'a self,
-        filter: &Filter,
-    ) -> Result<SubscriptionStream<'a, Self::Provider, Log>, Self::Error>
-    where
-        <Self as Middleware>::Provider: PubsubClient,
-    {
-        self.inner().subscribe_logs(filter).await.map_err(FromErr::from)
-    }
-
     async fn fee_history<T: Into<U256> + serde::Serialize + Send + Sync>(
         &self,
         block_count: T,
@@ -724,16 +583,6 @@ pub mod test_provider {
 
         pub fn provider(&self) -> Provider<Http> {
             Provider::try_from(self.url().as_str()).unwrap()
-        }
-
-        #[cfg(feature = "ws")]
-        pub async fn ws(&self) -> Provider<crate::Ws> {
-            let url = format!(
-                "wss://{}.infura.io/ws/v3/{}",
-                self.network,
-                self.keys.lock().unwrap().next().unwrap()
-            );
-            Provider::connect(url.as_str()).await.unwrap()
         }
     }
 }

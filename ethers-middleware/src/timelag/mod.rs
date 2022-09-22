@@ -118,14 +118,6 @@ where
             .map_err(ethers_providers::FromErr::from)
     }
 
-    async fn send_transaction<T: Into<TypedTransaction> + Send + Sync>(
-        &self,
-        tx: T,
-        block: Option<BlockId>,
-    ) -> Result<ethers_providers::PendingTransaction<'_, Self::Provider>, Self::Error> {
-        self.inner().send_transaction(tx, block).await.map_err(ethers_providers::FromErr::from)
-    }
-
     async fn get_block<T: Into<BlockId> + Send + Sync>(
         &self,
         block_hash_or_number: T,
@@ -309,63 +301,6 @@ where
     where
         T: Into<U256> + Send + Sync,
         R: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + std::fmt::Debug,
-    {
-        Err(TimeLagError::Unsupported)
-    }
-
-    async fn watch_blocks(
-        &self,
-    ) -> Result<ethers_providers::FilterWatcher<'_, Self::Provider, TxHash>, Self::Error> {
-        Err(TimeLagError::Unsupported)
-    }
-
-    async fn subscribe<T, R>(
-        &self,
-        _params: T,
-    ) -> Result<ethers_providers::SubscriptionStream<'_, Self::Provider, R>, Self::Error>
-    where
-        T: std::fmt::Debug + serde::Serialize + Send + Sync,
-        R: serde::de::DeserializeOwned + Send + Sync,
-        Self::Provider: ethers_providers::PubsubClient,
-    {
-        Err(TimeLagError::Unsupported)
-    }
-
-    async fn unsubscribe<T>(&self, _id: T) -> Result<bool, Self::Error>
-    where
-        T: Into<U256> + Send + Sync,
-        Self::Provider: ethers_providers::PubsubClient,
-    {
-        Err(TimeLagError::Unsupported)
-    }
-
-    async fn subscribe_blocks(
-        &self,
-    ) -> Result<ethers_providers::SubscriptionStream<'_, Self::Provider, Block<TxHash>>, Self::Error>
-    where
-        Self::Provider: ethers_providers::PubsubClient,
-    {
-        Err(TimeLagError::Unsupported)
-    }
-
-    async fn subscribe_pending_txs(
-        &self,
-    ) -> Result<ethers_providers::SubscriptionStream<'_, Self::Provider, TxHash>, Self::Error>
-    where
-        Self::Provider: ethers_providers::PubsubClient,
-    {
-        Err(TimeLagError::Unsupported)
-    }
-
-    async fn subscribe_logs<'a>(
-        &'a self,
-        _filter: &ethers_core::types::Filter,
-    ) -> Result<
-        ethers_providers::SubscriptionStream<'a, Self::Provider, ethers_core::types::Log>,
-        Self::Error,
-    >
-    where
-        Self::Provider: ethers_providers::PubsubClient,
     {
         Err(TimeLagError::Unsupported)
     }

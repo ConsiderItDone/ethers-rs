@@ -1,5 +1,5 @@
 use ethers_core::types::{transaction::eip2718::TypedTransaction, BlockId};
-use ethers_providers::{FromErr, Middleware, PendingTransaction};
+use ethers_providers::{FromErr, Middleware};
 
 use async_trait::async_trait;
 use std::fmt::Debug;
@@ -93,20 +93,5 @@ where
 
     fn inner(&self) -> &M {
         &self.inner
-    }
-
-    /// This ensures the tx complies with the registered policy.
-    /// If so then this simply delegates the transaction to the inner middleware
-    async fn send_transaction<T: Into<TypedTransaction> + Send + Sync>(
-        &self,
-        tx: T,
-        block: Option<BlockId>,
-    ) -> Result<PendingTransaction<'_, Self::Provider>, Self::Error> {
-        let tx = self
-            .policy
-            .ensure_can_send(tx.into())
-            .await
-            .map_err(PolicyMiddlewareError::PolicyError)?;
-        self.inner.send_transaction(tx, block).await.map_err(PolicyMiddlewareError::MiddlewareError)
     }
 }
